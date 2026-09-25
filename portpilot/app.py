@@ -6,23 +6,51 @@
 - 详情窗口可查看完整命令行/工作目录/PID
 """
 
+import html
 import os
 import subprocess
+import time as _time
 
 import rumps
 
 from . import killer, scanner, store
 from .config import CONFIG_PATH, load_config, save_config
 
+VIEW_DIR = os.path.expanduser("~/.portpilot/views")
 
-def _activate():
-    """LSUIElement 应用无 Dock 图标，新 macOS 上弹窗默认抢不到焦点（窗口点不动、
-    也阻塞菜单栏退出）。任何 Window/alert 显示前必须先激活本应用。"""
-    try:
-        from AppKit import NSApp
-        NSApp.activateIgnoringOtherApps_(True)
-    except Exception:
-        pass
+
+def _open_view(filename: str, title: str, body_html: str):
+    """生成 HTML 视图并用默认浏览器打开（非模态：可自由关闭/滚动，无焦点问题）。"""
+    os.makedirs(VIEW_DIR, exist_ok=True)
+    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>{html.escape(title)}</title>
+<style>
+body{{background:#1e1e2e;color:#cdd6f4;font:14px/1.7 -apple-system,"PingFang SC",sans-serif;
+margin:0;padding:24px 32px;}}
+h1{{font-size:16px;color:#89b4fa;margin:0 0 16px;}}
+table{{border-collapse:collapse;width:100%;}}
+td{{padding:4px 10px 4px 0;vertical-align:top;white-space:nowrap;}}
+td.full{{white-space:normal;word-break:break-all;}}
+.mono{{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;}}
+.up{{color:#a6e3a1;}} .down{{color:#f38ba8;}} .dim{{color:#6c7086;}}
+.tag{{display:inline-block;padding:0 8px;border-radius:4px;font-size:11px;}}
+.tag-ai{{background:#45475a;color:#a6e3a1;}} .tag-other{{background:#45475a;color:#f9e2af;}}
+.tag-protected{{background:#45475a;color:#f38ba8;}}
+</style></head><body><h1>{html.escape(title)}</h1>{body_html}</body></html>"""
+    path = os.path.join(VIEW_DIR, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(page)
+    subprocess.Popen(["open", path])
+
+
+def _confirm(title: str, message: str, ok_button: str = "停止") -> bool:
+    """系统级确认框（osascript 独立进程弹窗，焦点可靠，不依赖本应用激活状态）。"""
+    esc = message.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    script = (f'display dialog "{esc}" with title "{title}" '
+              f'buttons {{"取消", "{ok_button}"}} default button "取消" '
+              f'cancel button "取消" with icon caution')
+    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    return r.returncode == 0
 
 AI_CAP = 12       # 主菜单 AI 服务最多展示条数（控制菜单高度）
 OTHER_CAP = 15    # "其他服务"子菜单最多展示条数
@@ -139,6 +167,10 @@ class PortPilotApp(rumps.App):
         menu.add(rumps.separator)
         menu.add(rumps.MenuItem("打开配置文件", callback=self.open_config))
         menu.add(rumps.MenuItem("打开数据目录", callback=self.open_datadir))
+        # menu.clear() 会把 rumps 自动生成的退出项一并清掉，这里必须显式补回
+        menu.add(rumps.separator)
+        menu.add(rumps.MenuItem("退出 PortPilot",
+                                callback=lambda _s: rumps.quit_application()))
 
     def _service_item(self, l) -> rumps.MenuItem:
         """服务条目：父项=应用名+端口+⏹，子菜单=停止/详情/Finder。"""
@@ -159,17 +191,13 @@ class PortPilotApp(rumps.App):
 
     # ---------- 动作 ----------
     def on_stop(self, l):
-        _activate()
         if l.key not in self.prev:
             rumps.notification("PortPilot", "无需操作", f":{l.port} 已停止")
             self.refresh()
             return
         if l.category != "ai":
-            ret = rumps.alert(
-                "确认停止该服务？",
-                f":{l.port}  {_app_label(l)}\n\n{l.command[:200]}",
-                ok="停止", cancel="取消")
-            if not ret:
+            msg = (f":{l.port}  {_app_label(l)}\n\n{l.command[:200]}")
+            if not _confirm("确认停止该服务？", msg):
                 return
         ok, detail = killer.stop(l.pid, l.port, l.name)
         rumps.notification("PortPilot",
@@ -178,19 +206,21 @@ class PortPilotApp(rumps.App):
         self.refresh()
 
     def show_detail(self, l):
-        """详情窗口：完整命令行 / 工作目录 / PID 等（解决列表截断问题）。"""
-        _activate()
+        """详情页（浏览器打开）：完整命令行 / 工作目录 / PID 等。"""
         cat = {"ai": "AI 服务", "other": "其他服务", "protected": "系统服务"}[l.category]
-        text = (
-            f"应用：{_app_label(l)}\n"
-            f"端口：:{l.port}\n"
-            f"分类：{cat}\n"
-            f"PID：{l.pid}\n"
-            f"工作目录：{l.cwd or '（不可见）'}\n"
-            f"完整命令行：\n{l.command}"
-        )
-        rumps.Window(text, f"PortPilot · :{l.port} 详情",
-                     dimensions=(560, 380), default_text=text).run()
+        rows = [
+            ("应用", html.escape(_app_label(l))),
+            ("端口", f":{l.port}"),
+            ("分类", cat),
+            ("PID", str(l.pid)),
+            ("工作目录", html.escape(l.cwd or "（不可见）")),
+        ]
+        tr = "".join(f'<tr><td class="dim">{k}</td><td class="mono">{v}</td></tr>'
+                     for k, v in rows)
+        tr += (f'<tr><td class="dim">完整命令行</td>'
+               f'<td class="mono full">{html.escape(l.command)}</td></tr>')
+        _open_view(f"detail-{l.pid}-{l.port}.html",
+                   f"PortPilot · :{l.port} 详情", f"<table>{tr}</table>")
 
     def reveal_cwd(self, l):
         if l.cwd and os.path.isdir(l.cwd):
@@ -199,22 +229,26 @@ class PortPilotApp(rumps.App):
             rumps.notification("PortPilot", "无法打开", "工作目录不可见")
 
     def show_history(self, sender):
-        import time as _t
-        _activate()
-        rows = store.recent_events(30)
+        """端口动态页（浏览器打开）：最近 30 条起/停事件，可滚动查看完整命令行。"""
+        rows = store.recent_events(50)
         if not rows:
-            rumps.Window("暂无记录", "PortPilot · 端口动态",
-                         dimensions=(420, 300)).run()
+            _open_view("history.html", "PortPilot · 端口动态",
+                       "<p class='dim'>暂无记录</p>")
             return
-        lines = []
+        trs = []
         for ts, ev, port, pid, name, cat, cmd in rows:
-            t = _t.strftime("%m-%d %H:%M:%S", _t.localtime(ts))
-            mark = "↑起" if ev == "up" else "↓停"
+            t = _time.strftime("%m-%d %H:%M:%S", _time.localtime(ts))
+            mark = ('<span class="up">↑起</span>' if ev == "up"
+                    else '<span class="down">↓停</span>')
             cat_zh = {"ai": "AI", "other": "其他", "protected": "系统"}.get(cat, cat)
-            lines.append(f"{t}  {mark}  :{port}  [{cat_zh}]  {cmd[:70]}")
-        text = "\n".join(lines)
-        rumps.Window(text, "PortPilot · 端口动态",
-                     dimensions=(640, 500), default_text=text).run()
+            tag = f'<span class="tag tag-{cat}">{cat_zh}</span>'
+            trs.append(
+                f'<tr><td class="dim mono">{t}</td><td>{mark}</td>'
+                f'<td class="mono">:{port}</td><td>{tag}</td>'
+                f'<td class="mono full">{html.escape(cmd)}</td></tr>')
+        body = ("<table><tr class='dim'><td>时间</td><td></td><td>端口</td>"
+                "<td>分类</td><td>命令行</td></tr>" + "".join(trs) + "</table>")
+        _open_view("history.html", "PortPilot · 端口动态（最近 50 条）", body)
 
     def toggle_notify(self, sender):
         sender.state = not sender.state
