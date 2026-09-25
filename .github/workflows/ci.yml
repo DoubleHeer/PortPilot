@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install rumps
+      - name: Import & scan smoke test
+        run: |
+          python -c "import ast,glob; [ast.parse(open(f).read()) for f in glob.glob('portpilot/*.py')]; print('syntax OK')"
+          python -c "from portpilot import scanner, killer, store; from portpilot.config import load_config; print('import OK')"
+          python -m portpilot scan
+      - name: Kill workflow smoke test
+        run: |
+          python3 -m http.server 18999 &
+          sleep 1
+          python -m portpilot kill-port 18999
+          if lsof -nP -iTCP:18999 -sTCP:LISTEN | grep -q LISTEN; then
+            echo "port 18999 still listening"; exit 1
+          fi
+          echo "kill-port OK"
