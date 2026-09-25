@@ -12,8 +12,8 @@ OPTIONS = {
         "CFBundleName": "PortPilot",
         "CFBundleDisplayName": "PortPilot",
         "CFBundleIdentifier": "cn.heerdy.portpilot",
-        "CFBundleShortVersionString": "1.0.0",
-        "CFBundleVersion": "1.0.0",
+        "CFBundleShortVersionString": "1.0.1",
+        "CFBundleVersion": "1.0.1",
         "LSMinimumSystemVersion": "10.15",
         "LSUIElement": True,  # 菜单栏应用，不占 Dock
         "NSHumanReadableCopyright": "MIT License",
