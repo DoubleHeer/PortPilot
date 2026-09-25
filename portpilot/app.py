@@ -14,6 +14,16 @@ import rumps
 from . import killer, scanner, store
 from .config import CONFIG_PATH, load_config, save_config
 
+
+def _activate():
+    """LSUIElement 应用无 Dock 图标，新 macOS 上弹窗默认抢不到焦点（窗口点不动、
+    也阻塞菜单栏退出）。任何 Window/alert 显示前必须先激活本应用。"""
+    try:
+        from AppKit import NSApp
+        NSApp.activateIgnoringOtherApps_(True)
+    except Exception:
+        pass
+
 AI_CAP = 12       # 主菜单 AI 服务最多展示条数（控制菜单高度）
 OTHER_CAP = 15    # "其他服务"子菜单最多展示条数
 STOP_ICON = "⏹"
@@ -149,6 +159,7 @@ class PortPilotApp(rumps.App):
 
     # ---------- 动作 ----------
     def on_stop(self, l):
+        _activate()
         if l.key not in self.prev:
             rumps.notification("PortPilot", "无需操作", f":{l.port} 已停止")
             self.refresh()
@@ -168,6 +179,7 @@ class PortPilotApp(rumps.App):
 
     def show_detail(self, l):
         """详情窗口：完整命令行 / 工作目录 / PID 等（解决列表截断问题）。"""
+        _activate()
         cat = {"ai": "AI 服务", "other": "其他服务", "protected": "系统服务"}[l.category]
         text = (
             f"应用：{_app_label(l)}\n"
@@ -188,6 +200,7 @@ class PortPilotApp(rumps.App):
 
     def show_history(self, sender):
         import time as _t
+        _activate()
         rows = store.recent_events(30)
         if not rows:
             rumps.Window("暂无记录", "PortPilot · 端口动态",
